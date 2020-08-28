@@ -1,75 +1,58 @@
-package main
+package token_bucket
 
 import (
+	"sync"
 	"time"
 )
 
 type Bucket struct {
-	Length              int
-	ThresholdValue      int
-	MinusThresholdValue int
-	TokenList           int
-	PutSpeed            int
+	thresholdValue  int64
+	fillInterval    int64 // fillInterval holds the interval between each tick.
+	availableTokens int64
+	putSpeed        int64
+	latestTick      int64
+	mu              sync.Mutex
 }
 
-/*
-this function Put the token into the bucket at a certain rate
-*/
-func (bucket *Bucket) PushToken(putNum int) {
-	for i := 0; i < putNum; i++ {
-		if bucket.Length < bucket.ThresholdValue {
-			bucket.Length++
-			bucket.TokenList++
-		}
+// Rate return every token needs how much Duration
+func (bucket *Bucket) Rate() float64 {
+	return 1e9 / float64(bucket.fillInterval)
+}
+
+func (bucket *Bucket) available(now time.Time) int64 {
+	tick := now.UnixNano()
+	bucket.mu.Lock()
+	defer bucket.mu.Unlock()
+	lastTick := bucket.latestTick
+	bucket.latestTick = tick
+	if bucket.availableTokens >= bucket.thresholdValue {
+		bucket.availableTokens = bucket.thresholdValue
+		return bucket.availableTokens
 	}
+	bucket.availableTokens += (tick - lastTick) / bucket.fillInterval
+	if bucket.availableTokens > bucket.thresholdValue {
+		bucket.availableTokens = bucket.thresholdValue
+	}
+	return bucket.availableTokens
 }
 
-/*
-request need use this function to get  licence for the services
-true : means that this request could get the services
-false: the reverse
-*/
-func (bucket *Bucket) GetToken(needNum int) bool {
-	if bucket.Length > needNum {
-		bucket.Length -= needNum
-		bucket.TokenList -= needNum
-		return true
+func (bucket *Bucket) Take(tokenCount int64) (int64, bool) {
+	available := bucket.available(time.Now())
+	if available > tokenCount {
+		bucket.availableTokens = available - tokenCount
+		return tokenCount, true
 	} else {
-		if bucket.MinusThresholdValue > needNum {
-			bucket.Length -= needNum
-			bucket.TokenList -= needNum
-			return true
-		} else {
-			return false
-		}
+		bucket.availableTokens = 0
+		return available, false
 	}
 }
 
-/*
-Put a fixed number of tokens into the bucket every second
-*/
-func (bucket *Bucket) Start() {
-	go func() {
-		for true {
-			bucket.PushToken(bucket.PutSpeed)
-			time.Sleep(time.Second)
-		}
-	}()
-}
-func NewTokenBucket(thresholdValue, minusThresholdValue, putSpeed int) *Bucket {
-	return &Bucket{ThresholdValue: thresholdValue, MinusThresholdValue: minusThresholdValue, PutSpeed: putSpeed}
-}
-func main() {
-	/*
-	init TokenBucket I called myBucket
-	she will put 2 token every second
-	*/
-	myBucket := NewTokenBucket(5, 0, 2)
-	myBucket.Start()
-	for true {
-		myBucket.GetToken(1)
-		println(myBucket.TokenList)
-		println(myBucket.Length)
-		time.Sleep(time.Second)
-	}
+func NewTokenBucket(thresholdValue, putSpeed int64) *Bucket {
+	bucket := &Bucket{
+		latestTick:      time.Now().UnixNano(),
+		fillInterval:    1e9 / putSpeed,
+		availableTokens: 0,
+		thresholdValue:  thresholdValue,
+		putSpeed:        putSpeed}
+	return bucket
 }
